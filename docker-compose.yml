@@ -1,0 +1,105 @@
+services:
+
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-factoryiq}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-factoryiq}
+      POSTGRES_DB: ${POSTGRES_DB:-factoryiq}
+    ports:
+      - "5433:5432"
+    volumes:
+      - timescaledb_data:/var/lib/postgresql/data
+      - ./migrations/001_initial.sql:/docker-entrypoint-initdb.d/001_initial.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-factoryiq} -d ${POSTGRES_DB:-factoryiq}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  mosquitto:
+    image: eclipse-mosquitto:2.0
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_pub -h localhost -p 1883 -t health/check -m ping -q 0 2>/dev/null && echo ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  simulator:
+    build:
+      context: ./simulator
+      dockerfile: Dockerfile
+    environment:
+      OPC_UA_PORT: ${OPC_UA_PORT:-4840}
+      MQTT_HOST: mosquitto
+      MQTT_PORT: ${MQTT_PORT:-1883}
+      SIMULATOR_PORT: ${SIMULATOR_PORT:-8001}
+    ports:
+      - "4840:4840"
+      - "8001:8001"
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:${SIMULATOR_PORT:-8001}/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: on-failure
+
+  app:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    environment:
+      POSTGRES_HOST: timescaledb
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_USER: ${POSTGRES_USER:-factoryiq}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-factoryiq}
+      POSTGRES_DB: ${POSTGRES_DB:-factoryiq}
+      MQTT_HOST: mosquitto
+      MQTT_PORT: ${MQTT_PORT:-1883}
+      APP_PORT: ${APP_PORT:-8000}
+      TAG_STALENESS_THRESHOLD_SECONDS: ${TAG_STALENESS_THRESHOLD_SECONDS:-10}
+    ports:
+      - "8080:8000"
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      mosquitto:
+        condition: service_healthy
+      simulator:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:${APP_PORT:-8000}/api/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: on-failure
+
+  seed:
+    build:
+      context: .
+      dockerfile: seed/Dockerfile
+    environment:
+      POSTGRES_HOST: timescaledb
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_USER: ${POSTGRES_USER:-factoryiq}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-factoryiq}
+      POSTGRES_DB: ${POSTGRES_DB:-factoryiq}
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+    profiles:
+      - seed
+
+volumes:
+  timescaledb_data:
