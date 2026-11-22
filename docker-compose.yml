@@ -71,6 +71,17 @@ services:
       TAG_STALENESS_THRESHOLD_SECONDS: ${TAG_STALENESS_THRESHOLD_SECONDS:-10}
       MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:-changeme}
       MCP_HUMAN_TOKEN: ${MCP_HUMAN_TOKEN:-human-changeme}
+      # AI agent (Milestone 3) — ANTHROPIC_API_KEY comes from the host .env
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      AGENT_MODEL: ${AGENT_MODEL:-claude-sonnet-4-6}
+      AGENT_MAX_TOOL_CALLS: ${AGENT_MAX_TOOL_CALLS:-15}
+      AGENT_MAX_TOKENS: ${AGENT_MAX_TOKENS:-1024}
+      AGENT_TIMEOUT_SECONDS: ${AGENT_TIMEOUT_SECONDS:-90}
+      # Agent calls the app's own MCP server internally on the container's port
+      AGENT_MCP_URL: http://localhost:${APP_PORT:-8000}/mcp/
+      ALLOW_SCRIPTED_RUNNER: ${ALLOW_SCRIPTED_RUNNER:-false}
+      # Evaluation harness: simulator URL for fault injection
+      SIMULATOR_URL: http://simulator:${SIMULATOR_PORT:-8001}
     ports:
       - "8080:8000"
     volumes:

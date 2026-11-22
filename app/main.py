@@ -26,6 +26,7 @@ from ingestion.mqtt_consumer import run_consumer
 from ingestion.freshness_monitor import run_freshness_monitor
 from api.telemetry import router as telemetry_router
 from api.investigations import router as investigations_router
+from api.evaluation import router as evaluation_router
 from mcp_server.server import build_mcp_asgi, MCP_TOKEN, mcp as mcp_server
 
 logging.basicConfig(
@@ -62,6 +63,58 @@ async def _run_migrations() -> None:
                 raise
 
 
+async def _seed_scenarios() -> None:
+    """Upsert all 36 evaluation scenarios and ground truth into eval tables."""
+    from evaluation.scenarios import SCENARIOS
+    pool = get_pool()
+    for s in SCENARIOS:
+        gt = s.get("ground_truth", {})
+        await pool.execute(
+            """
+            INSERT INTO eval_scenarios (
+                scenario_id, version, name, category, asset_id,
+                evidence_condition, description, fault_config, expected_behavior, seed
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            ON CONFLICT (scenario_id) DO UPDATE SET
+                version           = EXCLUDED.version,
+                name              = EXCLUDED.name,
+                description       = EXCLUDED.description,
+                fault_config      = EXCLUDED.fault_config,
+                expected_behavior = EXCLUDED.expected_behavior
+            """,
+            s["scenario_id"], s["version"], s["name"], s["category"],
+            s["asset_id"], s["evidence_condition"], s["description"],
+            s["fault_config"], s["expected_behavior"], s["seed"],
+        )
+        if gt:
+            await pool.execute(
+                """
+                INSERT INTO eval_ground_truth (
+                    scenario_id, true_root_cause, injected_fault_type,
+                    acceptable_conclusion_patterns, negative_patterns,
+                    uncertainty_required, fault_expected, evaluation_notes
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                ON CONFLICT (scenario_id) DO UPDATE SET
+                    true_root_cause                = EXCLUDED.true_root_cause,
+                    injected_fault_type            = EXCLUDED.injected_fault_type,
+                    acceptable_conclusion_patterns = EXCLUDED.acceptable_conclusion_patterns,
+                    negative_patterns              = EXCLUDED.negative_patterns,
+                    uncertainty_required           = EXCLUDED.uncertainty_required,
+                    fault_expected                 = EXCLUDED.fault_expected,
+                    evaluation_notes               = EXCLUDED.evaluation_notes
+                """,
+                s["scenario_id"],
+                gt.get("true_root_cause", "unknown"),
+                gt.get("injected_fault_type"),
+                gt.get("acceptable_conclusion_patterns", []),
+                gt.get("negative_patterns", []),
+                gt.get("uncertainty_required", False),
+                gt.get("fault_expected", False),
+                gt.get("evaluation_notes", ""),
+            )
+    logger.info("Eval scenarios seeded (%d scenarios)", len(SCENARIOS))
+
+
 async def _seed_equipment_docs() -> None:
     """Insert corpus documents into equipment_docs if the table is empty."""
     from mcp_server.corpus import CORPUS
@@ -92,6 +145,7 @@ async def lifespan(app: FastAPI):
 
     await _run_migrations()
     await _seed_equipment_docs()
+    await _seed_scenarios()
 
     # session_manager.run() initialises the anyio task group required by the
     # MCP streamable-HTTP transport.  FastAPI's app.mount() does not propagate
@@ -127,6 +181,7 @@ app.add_middleware(
 
 app.include_router(telemetry_router)
 app.include_router(investigations_router)
+app.include_router(evaluation_router)
 
 # Mount MCP server at /mcp — bearer-token protected via BearerAuthASGI middleware
 app.mount("/mcp", build_mcp_asgi(MCP_TOKEN))

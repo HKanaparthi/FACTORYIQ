@@ -80,15 +80,35 @@ async def _write_telemetry(pool, asset_id: str, metrics: list[dict], now_ms: int
 
 
 async def _write_alarm(pool, alarm: dict) -> None:
+    asset_id = alarm.get("asset_id", "UNKNOWN")
+    alarm_type = alarm.get("tag_name", "UNKNOWN")
+
     async with pool.acquire() as conn:
+        # Dedup: suppress repeat alarms for the same sustained condition.
+        # Allow a new alarm through only after a 5-minute cooldown window.
+        existing = await conn.fetchval(
+            """
+            SELECT 1 FROM alarms
+            WHERE asset_id = $1
+              AND alarm_type = $2
+              AND acknowledged_at IS NULL
+              AND triggered_at >= NOW() - INTERVAL '5 minutes'
+            LIMIT 1
+            """,
+            asset_id,
+            alarm_type,
+        )
+        if existing:
+            return
+
         await conn.execute(
             """
             INSERT INTO alarms
               (asset_id, alarm_type, severity, message, raw_value, threshold, is_simulated)
             VALUES ($1, $2, $3, $4, $5, $6, TRUE)
             """,
-            alarm.get("asset_id", "UNKNOWN"),
-            alarm.get("tag_name", "UNKNOWN"),
+            asset_id,
+            alarm_type,
             alarm.get("severity", "HIGH"),
             alarm.get("message", ""),
             alarm.get("value"),

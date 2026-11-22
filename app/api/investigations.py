@@ -1,26 +1,50 @@
 """
-Investigation management API — Milestone 2.
+Investigation management API — Milestone 2 + 3.
 
-Provides endpoints to create investigations and approve/reject findings.
+Milestone 2: Create, list, approve, and reject investigations.
+Milestone 3: Trigger AI agent runs (non-blocking) and stream progress via SSE.
+
 Human approval requires MCP_HUMAN_TOKEN (different from MCP_BEARER_TOKEN).
 The AI agent cannot approve its own findings — it only has MCP_BEARER_TOKEN.
 """
 
+import asyncio
+import json
 import os
 import uuid
 import logging
 
-from fastapi import APIRouter, HTTPException, Header
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Header
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional
 
 from db import get_pool
+
+# agent.runner imported lazily inside the endpoint to avoid circular imports
+# at module load time (agent depends on db which must be initialised first).
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/investigations", tags=["investigations"])
 
 HUMAN_TOKEN: str = os.environ.get("MCP_HUMAN_TOKEN", "human-changeme")
+
+# ---------------------------------------------------------------------------
+# In-process SSE event queues: investigation_id → asyncio.Queue
+# Queue items are dicts (SSE event payload) or None (end-of-stream sentinel).
+# ---------------------------------------------------------------------------
+_active_queues: dict[str, asyncio.Queue] = {}
+
+
+def _get_or_create_queue(investigation_id: str) -> asyncio.Queue:
+    if investigation_id not in _active_queues:
+        _active_queues[investigation_id] = asyncio.Queue()
+    return _active_queues[investigation_id]
+
+
+def _remove_queue(investigation_id: str) -> None:
+    _active_queues.pop(investigation_id, None)
 
 
 class CreateInvestigationRequest(BaseModel):
@@ -30,6 +54,12 @@ class CreateInvestigationRequest(BaseModel):
 
 class ApproveRejectRequest(BaseModel):
     notes: Optional[str] = None
+
+
+class ReviewProxyRequest(BaseModel):
+    action: str  # "approve" or "reject"
+    notes: Optional[str] = None
+    password: str  # validated server-side against MCP_HUMAN_TOKEN
 
 
 def _require_human_token(authorization: str = "") -> None:
@@ -127,7 +157,8 @@ async def get_investigation(investigation_id: str):
         """
         SELECT investigation_id, asset_id, trigger_alarm_id, status,
                finding_text, evidence_summary, alt_hypotheses,
-               started_at, completed_at, is_simulated
+               started_at, completed_at, is_simulated,
+               agent_model, agent_error, agent_tool_calls
         FROM investigations WHERE investigation_id = $1
         """,
         inv_uuid,
@@ -155,12 +186,16 @@ async def get_investigation(investigation_id: str):
         "started_at": inv["started_at"].isoformat(),
         "completed_at": inv["completed_at"].isoformat() if inv["completed_at"] else None,
         "is_simulated": inv["is_simulated"],
+        "agent_model": inv["agent_model"],
+        "agent_error": inv["agent_error"],
+        "agent_tool_calls": inv["agent_tool_calls"],
         "evidence_items": [
             {
                 "evidence_id": str(e["evidence_id"]),
                 "sequence_num": e["sequence_num"],
                 "tool_name": e["tool_name"],
                 "tool_inputs": e["tool_inputs"],
+                "tool_output": e["tool_output"],
                 "evidence_tier": e["evidence_tier"],
                 "recorded_at": e["recorded_at"].isoformat(),
                 "citation_text": e["citation_text"],
@@ -239,3 +274,220 @@ async def reject_investigation(
     )
     logger.info("Investigation %s rejected by human", investigation_id)
     return {"investigation_id": investigation_id, "status": "rejected", "notes": body.notes}
+
+
+# ---------------------------------------------------------------------------
+# Human review proxy — MCP_HUMAN_TOKEN lives server-side only
+# ---------------------------------------------------------------------------
+
+@router.post("/{investigation_id}/review")
+async def review_investigation_proxy(
+    investigation_id: str,
+    body: ReviewProxyRequest,
+):
+    """
+    Server-side proxy for approve/reject. The frontend sends a password typed by
+    the human reviewer; this endpoint validates it against MCP_HUMAN_TOKEN (server-side
+    only) so the token never appears in browser code, Vite env vars, or the bundle.
+    """
+    if body.action not in ("approve", "reject"):
+        raise HTTPException(status_code=422, detail="action must be 'approve' or 'reject'")
+
+    if body.password != HUMAN_TOKEN:
+        raise HTTPException(status_code=403, detail="Invalid review password")
+
+    try:
+        inv_uuid = uuid.UUID(investigation_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid investigation_id UUID")
+
+    pool = get_pool()
+    inv = await pool.fetchrow(
+        "SELECT status FROM investigations WHERE investigation_id = $1", inv_uuid
+    )
+    if inv is None:
+        raise HTTPException(status_code=404, detail="Investigation not found")
+    if inv["status"] != "pending_review":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot {body.action}: investigation status is '{inv['status']}'",
+        )
+
+    new_status = "approved" if body.action == "approve" else "rejected"
+    await pool.execute(
+        f"UPDATE investigations SET status = '{new_status}' WHERE investigation_id = $1",
+        inv_uuid,
+    )
+    logger.info("Investigation %s %s via review proxy", investigation_id, new_status)
+    return {"investigation_id": investigation_id, "status": new_status, "notes": body.notes}
+
+
+# ---------------------------------------------------------------------------
+# Milestone 3: AI agent trigger + SSE progress stream
+# ---------------------------------------------------------------------------
+
+@router.post("/{investigation_id}/run")
+async def run_investigation(
+    investigation_id: str,
+    background_tasks: BackgroundTasks,
+):
+    """
+    Trigger the AI investigation agent for an existing investigation.
+    Returns immediately; the agent runs as a background task.
+    Stream progress via GET /{investigation_id}/stream.
+    """
+    try:
+        inv_uuid = uuid.UUID(investigation_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid investigation_id UUID")
+
+    pool = get_pool()
+    inv = await pool.fetchrow(
+        "SELECT asset_id, trigger_alarm_id, status FROM investigations WHERE investigation_id = $1",
+        inv_uuid,
+    )
+    if inv is None:
+        raise HTTPException(status_code=404, detail="Investigation not found")
+
+    if inv["status"] not in ("in_progress",):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Cannot run agent: investigation status is '{inv['status']}'. "
+                "Only 'in_progress' investigations can be started."
+            ),
+        )
+
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise HTTPException(
+            status_code=503,
+            detail="ANTHROPIC_API_KEY is not configured — agent unavailable.",
+        )
+
+    # Create the SSE queue before starting the task so early SSE connects don't miss events
+    queue = _get_or_create_queue(investigation_id)
+
+    # Import here to keep module-load order safe (db pool may not exist at import time)
+    from agent.runner import run_investigation as _run  # noqa: PLC0415
+
+    trigger_alarm_id = (
+        str(inv["trigger_alarm_id"]) if inv["trigger_alarm_id"] else None
+    )
+
+    background_tasks.add_task(
+        _run,
+        investigation_id,
+        inv["asset_id"],
+        trigger_alarm_id,
+        queue,
+    )
+
+    return {
+        "investigation_id": investigation_id,
+        "status": "running",
+        "stream_url": f"/api/investigations/{investigation_id}/stream",
+    }
+
+
+@router.post("/{investigation_id}/scripted-run")
+async def scripted_run_investigation(
+    investigation_id: str,
+    background_tasks: BackgroundTasks,
+    fail_before_flag: bool = False,
+):
+    """
+    Deterministic scripted investigation — no Anthropic API call.
+    Only available when ALLOW_SCRIPTED_RUNNER=true (dev/test environments).
+    Used by regression tests to exercise the full pipeline without API credits.
+    """
+    if os.environ.get("ALLOW_SCRIPTED_RUNNER", "").lower() != "true":
+        raise HTTPException(status_code=404, detail="Not found")
+
+    try:
+        inv_uuid = uuid.UUID(investigation_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid investigation_id UUID")
+
+    pool = get_pool()
+    inv = await pool.fetchrow(
+        "SELECT asset_id, trigger_alarm_id, status FROM investigations WHERE investigation_id = $1",
+        inv_uuid,
+    )
+    if inv is None:
+        raise HTTPException(status_code=404, detail="Investigation not found")
+    if inv["status"] not in ("in_progress",):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot run agent: investigation status is '{inv['status']}'",
+        )
+
+    queue = _get_or_create_queue(investigation_id)
+
+    from agent.runner import run_scripted_investigation as _run_scripted  # noqa: PLC0415
+
+    trigger_alarm_id = (
+        str(inv["trigger_alarm_id"]) if inv["trigger_alarm_id"] else None
+    )
+
+    background_tasks.add_task(
+        _run_scripted,
+        investigation_id,
+        inv["asset_id"],
+        trigger_alarm_id,
+        queue,
+        fail_before_flag,
+    )
+
+    return {
+        "investigation_id": investigation_id,
+        "status": "running",
+        "mode": "scripted",
+        "stream_url": f"/api/investigations/{investigation_id}/stream",
+    }
+
+
+@router.get("/{investigation_id}/stream")
+async def stream_investigation(investigation_id: str):
+    """
+    Server-Sent Events stream for investigation progress.
+    Each event is a JSON-encoded dict with a 'type' field.
+    Event types: tool_call, tool_result, warning, complete, error, heartbeat, done.
+    Stream closes after the investigation ends (done event) or on client disconnect.
+    """
+    try:
+        uuid.UUID(investigation_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid investigation_id UUID")
+
+    queue = _get_or_create_queue(investigation_id)
+
+    async def generate():
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=30.0)
+                except asyncio.TimeoutError:
+                    # Send heartbeat to keep the connection alive
+                    yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
+                    continue
+
+                if event is None:
+                    # End-of-stream sentinel from the agent runner
+                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                    break
+
+                yield f"data: {json.dumps(event)}\n\n"
+
+        except asyncio.CancelledError:
+            pass
+        finally:
+            _remove_queue(investigation_id)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )

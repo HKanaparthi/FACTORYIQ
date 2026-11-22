@@ -146,6 +146,95 @@ async def get_alarms(
     }
 
 
+KNOWN_ASSETS = ["CONVEYOR-01", "FILL-01", "MOTOR-01", "PUMP-01"]
+
+ASSET_META = {
+    "PUMP-01":     {"label": "Centrifugal Pump",   "tags": ["Temperature_degC", "Pressure_bar", "Vibration_mm_s", "FlowRate_Lmin"]},
+    "MOTOR-01":    {"label": "Electric Motor",      "tags": ["Current_A", "Temperature_degC", "Speed_rpm"]},
+    "CONVEYOR-01": {"label": "Conveyor Belt",       "tags": ["Speed_mps", "Temperature_degC"]},
+    "FILL-01":     {"label": "Filling Station",     "tags": ["Level_pct", "FillRate_Lmin", "Temperature_degC"]},
+}
+
+
+@router.get("/assets")
+async def list_assets():
+    """Return all known assets with current tag-health summary, alarm count, and latest investigation."""
+    pool = get_pool()
+
+    # Tag health grouped by asset_id
+    health_rows = await pool.fetch(
+        """
+        SELECT asset_id,
+               COUNT(*) FILTER (WHERE freshness_status = 'FRESH')   AS fresh,
+               COUNT(*) FILTER (WHERE freshness_status = 'STALE')   AS stale,
+               COUNT(*) FILTER (WHERE freshness_status = 'MISSING') AS missing,
+               COUNT(*)                                               AS total
+        FROM tag_health
+        GROUP BY asset_id
+        """
+    )
+    health_map = {r["asset_id"]: dict(r) for r in health_rows}
+
+    # Recent alarm counts + max severity (last 60 min)
+    alarm_rows = await pool.fetch(
+        """
+        SELECT asset_id,
+               COUNT(*) AS cnt,
+               BOOL_OR(severity IN ('HIGH','CRITICAL')) AS has_high
+        FROM alarms
+        WHERE triggered_at >= NOW() - INTERVAL '60 minutes'
+          AND acknowledged_at IS NULL
+        GROUP BY asset_id
+        """
+    )
+    alarm_map = {r["asset_id"]: r["cnt"] for r in alarm_rows}
+    alarm_high_map = {r["asset_id"]: r["has_high"] for r in alarm_rows}
+
+    # Latest investigation per asset
+    inv_rows = await pool.fetch(
+        """
+        SELECT DISTINCT ON (asset_id)
+            asset_id, investigation_id, status
+        FROM investigations
+        ORDER BY asset_id, started_at DESC
+        """
+    )
+    inv_map = {r["asset_id"]: r for r in inv_rows}
+
+    assets = []
+    for asset_id in KNOWN_ASSETS:
+        h = health_map.get(asset_id, {"fresh": 0, "stale": 0, "missing": 0, "total": 0})
+        inv = inv_map.get(asset_id)
+        total = h["total"] or 0
+        fresh = h["fresh"] or 0
+        stale = h["stale"] or 0
+        has_high_alarms = alarm_high_map.get(asset_id, False)
+        if total == 0:
+            health_status = "UNKNOWN"
+        elif stale > 0:
+            health_status = "DEGRADED"
+        elif has_high_alarms:
+            health_status = "WARNING"
+        else:
+            health_status = "HEALTHY"
+
+        assets.append({
+            "asset_id": asset_id,
+            "label": ASSET_META[asset_id]["label"],
+            "tags": ASSET_META[asset_id]["tags"],
+            "health_status": health_status,
+            "fresh_tags": int(fresh),
+            "stale_tags": int(stale),
+            "missing_tags": int(h["missing"] or 0),
+            "total_tags": int(total),
+            "recent_alarms": int(alarm_map.get(asset_id, 0)),
+            "latest_investigation_id": str(inv["investigation_id"]) if inv else None,
+            "latest_investigation_status": inv["status"] if inv else None,
+        })
+
+    return {"assets": assets}
+
+
 @router.get("/health")
 async def health():
     pool = get_pool()

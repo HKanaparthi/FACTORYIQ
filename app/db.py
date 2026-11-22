@@ -4,9 +4,20 @@ Call init_pool() at startup, get_pool() everywhere else.
 """
 
 import asyncpg
+import json
 import os
 
 _pool: asyncpg.Pool | None = None
+
+
+async def _init_conn(conn: asyncpg.Connection) -> None:
+    await conn.set_type_codec(
+        'jsonb',
+        encoder=json.dumps,
+        decoder=json.loads,
+        schema='pg_catalog',
+        format='text',
+    )
 
 
 async def init_pool() -> None:
@@ -19,6 +30,7 @@ async def init_pool() -> None:
         database=os.environ["POSTGRES_DB"],
         min_size=2,
         max_size=10,
+        init=_init_conn,
     )
 
 

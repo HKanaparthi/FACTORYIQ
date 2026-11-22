@@ -133,8 +133,8 @@ async def _log_evidence(
             inv_uuid,
             seq,
             tool_name,
-            json.dumps(tool_inputs),
-            json.dumps(tool_output),
+            tool_inputs,
+            tool_output,
             evidence_tier,
             citation_text,
         )
@@ -884,8 +884,8 @@ async def flag_for_review(
             """,
             inv_uuid,
             finding_text,
-            json.dumps(tiers_parsed),
-            json.dumps(alts_parsed),
+            tiers_parsed,
+            alts_parsed,
         )
 
     except Exception:
