@@ -169,12 +169,13 @@ function RunResultsPanel({ runId }: { runId: string }) {
   if (!run) return <div className="text-xs text-slate-500">Loading run…</div>
 
   const summary = run.summary
-  const totalEval = (summary?.correct ?? 0) +
+  const evaluable = (summary?.correct ?? 0) +
     (summary?.incorrect ?? 0) +
     (summary?.acceptable_alt ?? 0) +
     (summary?.uncertain_correct ?? 0)
-  const evaluable = totalEval + (summary?.non_evaluable ?? 0)
-  const pct = evaluable > 0 ? Math.round((((summary?.correct ?? 0) + (summary?.uncertain_correct ?? 0)) / evaluable) * 100) : null
+  const pct = evaluable > 0
+    ? Math.round(((summary?.correct ?? 0) + (summary?.uncertain_correct ?? 0)) / evaluable * 100)
+    : null
 
   return (
     <div className="space-y-4">
