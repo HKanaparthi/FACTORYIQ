@@ -23,6 +23,8 @@ import {
   useFourConditions,
 } from '../hooks/useEval'
 import type { DiagnosticVerdict, EvalResult, EvalScenario, EvalRunStatus } from '../api/types'
+import { DEMO_MODE } from '../demo'
+import { DEMO_EVAL_RUN } from '../demo/fixtures/evalRuns'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -404,7 +406,9 @@ type Tab = 'run' | 'scenarios' | 'four-conditions' | 'history'
 
 export function EvaluationWorkspace() {
   const [tab, setTab] = useState<Tab>('run')
-  const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(
+    DEMO_MODE ? DEMO_EVAL_RUN.run_id : null,
+  )
   const [scenarioFilter, setScenarioFilter] = useState<string | null>(null)
 
   const { data: scenarios } = useScenarios()
@@ -497,29 +501,38 @@ export function EvaluationWorkspace() {
                 </select>
               </div>
 
-              <button
-                onClick={() => {
-                  const ids =
-                    scenarioFilter && scenarios
-                      ? scenarios
-                          .filter((s) => s.category === scenarioFilter)
-                          .map((s) => s.scenario_id)
-                      : null
-                  handleStartRun(ids)
-                }}
-                disabled={startRun.isPending}
-                className="flex w-full items-center justify-center gap-2 rounded-lg bg-amber-600 px-4 py-2 text-sm font-medium text-white hover:bg-amber-500 disabled:opacity-50"
-              >
-                {startRun.isPending ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Play className="h-4 w-4" />
-                )}
-                Run Benchmark
-              </button>
+              {DEMO_MODE ? (
+                <div className="rounded border border-amber-700/40 bg-amber-900/20 px-3 py-2 text-xs text-amber-300/70">
+                  Recorded Benchmark Results — Run disabled in demo mode.
+                  Results below are from a pre-recorded scripted adapter run.
+                </div>
+              ) : (
+                <>
+                  <button
+                    onClick={() => {
+                      const ids =
+                        scenarioFilter && scenarios
+                          ? scenarios
+                              .filter((s) => s.category === scenarioFilter)
+                              .map((s) => s.scenario_id)
+                          : null
+                      handleStartRun(ids)
+                    }}
+                    disabled={startRun.isPending}
+                    className="flex w-full items-center justify-center gap-2 rounded-lg bg-amber-600 px-4 py-2 text-sm font-medium text-white hover:bg-amber-500 disabled:opacity-50"
+                  >
+                    {startRun.isPending ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Play className="h-4 w-4" />
+                    )}
+                    Run Benchmark
+                  </button>
 
-              {startRun.isError && (
-                <p className="mt-2 text-xs text-red-400">{startRun.error?.message}</p>
+                  {startRun.isError && (
+                    <p className="mt-2 text-xs text-red-400">{startRun.error?.message}</p>
+                  )}
+                </>
               )}
             </div>
 

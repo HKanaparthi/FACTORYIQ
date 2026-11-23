@@ -4,6 +4,7 @@ import { CheckCircle, XCircle, Lock, Eye, EyeOff, AlertCircle } from 'lucide-rea
 import { useInvestigations, useInvestigation, useReviewInvestigation } from '../hooks/useInvestigations'
 import { StatusBadge } from '../components/StatusBadge'
 import { FindingReport } from '../components/FindingReport'
+import { DEMO_MODE } from '../demo'
 
 export function HumanReview() {
   const [searchParams, setSearchParams] = useSearchParams()
@@ -35,7 +36,8 @@ export function HumanReview() {
   }
 
   const handleReview = async (action: 'approve' | 'reject') => {
-    if (!selectedId || !password) return
+    if (!selectedId) return
+    if (!DEMO_MODE && !password) return
     try {
       const result = await reviewMutation.mutateAsync({
         investigationId: selectedId,
@@ -161,74 +163,114 @@ export function HumanReview() {
             {/* Review form — only shown if pending */}
             {invData.status === 'pending_review' && !lastResult && (
               <div className="rounded-lg border border-slate-700 bg-slate-900/80 p-4">
-                <div className="mb-3 flex items-center gap-2 text-xs font-medium text-slate-400">
-                  <Lock className="h-3.5 w-3.5" />
-                  Human Review — Token Required
-                </div>
+                {DEMO_MODE ? (
+                  <>
+                    <div className="mb-3 rounded border border-amber-700/40 bg-amber-900/20 px-3 py-2 text-xs text-amber-300/70">
+                      <AlertCircle className="mb-0.5 inline h-3.5 w-3.5" />{' '}
+                      Demo mode — decisions are stored in local browser state only.
+                      No server call is made.
+                    </div>
+                    <div className="mb-4">
+                      <label className="mb-1 block text-xs text-slate-500">Notes (optional)</label>
+                      <textarea
+                        value={notes}
+                        onChange={(e) => setNotes(e.target.value)}
+                        rows={2}
+                        placeholder="Add reviewer notes…"
+                        className="w-full resize-none rounded border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-200 focus:border-amber-500/50 focus:outline-none"
+                      />
+                    </div>
+                    <div className="flex gap-3">
+                      <button
+                        onClick={() => handleReview('approve')}
+                        disabled={reviewMutation.isPending}
+                        className="flex flex-1 items-center justify-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 py-2.5 text-sm font-medium text-emerald-400 hover:bg-emerald-500/20 disabled:opacity-50"
+                      >
+                        <CheckCircle className="h-4 w-4" />
+                        Approve (local)
+                      </button>
+                      <button
+                        onClick={() => handleReview('reject')}
+                        disabled={reviewMutation.isPending}
+                        className="flex flex-1 items-center justify-center gap-2 rounded-lg border border-red-500/30 bg-red-500/10 py-2.5 text-sm font-medium text-red-400 hover:bg-red-500/20 disabled:opacity-50"
+                      >
+                        <XCircle className="h-4 w-4" />
+                        Reject (local)
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="mb-3 flex items-center gap-2 text-xs font-medium text-slate-400">
+                      <Lock className="h-3.5 w-3.5" />
+                      Human Review — Token Required
+                    </div>
 
-                <div className="mb-3 rounded border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs text-amber-400">
-                  <AlertCircle className="mb-0.5 inline h-3.5 w-3.5" /> The review token is validated
-                  server-side. It never appears in source code or browser storage.
-                </div>
+                    <div className="mb-3 rounded border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs text-amber-400">
+                      <AlertCircle className="mb-0.5 inline h-3.5 w-3.5" /> The review token is validated
+                      server-side. It never appears in source code or browser storage.
+                    </div>
 
-                <div className="mb-3">
-                  <label className="mb-1 block text-xs text-slate-500">
-                    Human Review Password
-                  </label>
-                  <div className="relative">
-                    <input
-                      type={showPassword ? 'text' : 'password'}
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      placeholder="Enter review token…"
-                      className="w-full rounded border border-slate-700 bg-slate-800 py-2 pl-3 pr-9 text-sm text-slate-200 focus:border-amber-500/50 focus:outline-none"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowPassword(!showPassword)}
-                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-600 hover:text-slate-400"
-                    >
-                      {showPassword ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-                    </button>
-                  </div>
-                </div>
+                    <div className="mb-3">
+                      <label className="mb-1 block text-xs text-slate-500">
+                        Human Review Password
+                      </label>
+                      <div className="relative">
+                        <input
+                          type={showPassword ? 'text' : 'password'}
+                          value={password}
+                          onChange={(e) => setPassword(e.target.value)}
+                          placeholder="Enter review token…"
+                          className="w-full rounded border border-slate-700 bg-slate-800 py-2 pl-3 pr-9 text-sm text-slate-200 focus:border-amber-500/50 focus:outline-none"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowPassword(!showPassword)}
+                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-600 hover:text-slate-400"
+                        >
+                          {showPassword ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                        </button>
+                      </div>
+                    </div>
 
-                <div className="mb-4">
-                  <label className="mb-1 block text-xs text-slate-500">Review Notes (optional)</label>
-                  <textarea
-                    value={notes}
-                    onChange={(e) => setNotes(e.target.value)}
-                    rows={2}
-                    placeholder="Add reviewer notes…"
-                    className="w-full resize-none rounded border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-200 focus:border-amber-500/50 focus:outline-none"
-                  />
-                </div>
+                    <div className="mb-4">
+                      <label className="mb-1 block text-xs text-slate-500">Review Notes (optional)</label>
+                      <textarea
+                        value={notes}
+                        onChange={(e) => setNotes(e.target.value)}
+                        rows={2}
+                        placeholder="Add reviewer notes…"
+                        className="w-full resize-none rounded border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-200 focus:border-amber-500/50 focus:outline-none"
+                      />
+                    </div>
 
-                {reviewMutation.error && (
-                  <div className="mb-3 flex items-center gap-2 rounded border border-red-500/20 bg-red-500/5 px-3 py-2 text-xs text-red-400">
-                    <XCircle className="h-3.5 w-3.5" />
-                    {(reviewMutation.error as Error).message}
-                  </div>
+                    {reviewMutation.error && (
+                      <div className="mb-3 flex items-center gap-2 rounded border border-red-500/20 bg-red-500/5 px-3 py-2 text-xs text-red-400">
+                        <XCircle className="h-3.5 w-3.5" />
+                        {(reviewMutation.error as Error).message}
+                      </div>
+                    )}
+
+                    <div className="flex gap-3">
+                      <button
+                        onClick={() => handleReview('approve')}
+                        disabled={!password || reviewMutation.isPending}
+                        className="flex flex-1 items-center justify-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 py-2.5 text-sm font-medium text-emerald-400 hover:bg-emerald-500/20 disabled:opacity-50"
+                      >
+                        <CheckCircle className="h-4 w-4" />
+                        Approve
+                      </button>
+                      <button
+                        onClick={() => handleReview('reject')}
+                        disabled={!password || reviewMutation.isPending}
+                        className="flex flex-1 items-center justify-center gap-2 rounded-lg border border-red-500/30 bg-red-500/10 py-2.5 text-sm font-medium text-red-400 hover:bg-red-500/20 disabled:opacity-50"
+                      >
+                        <XCircle className="h-4 w-4" />
+                        Reject
+                      </button>
+                    </div>
+                  </>
                 )}
-
-                <div className="flex gap-3">
-                  <button
-                    onClick={() => handleReview('approve')}
-                    disabled={!password || reviewMutation.isPending}
-                    className="flex flex-1 items-center justify-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 py-2.5 text-sm font-medium text-emerald-400 hover:bg-emerald-500/20 disabled:opacity-50"
-                  >
-                    <CheckCircle className="h-4 w-4" />
-                    Approve
-                  </button>
-                  <button
-                    onClick={() => handleReview('reject')}
-                    disabled={!password || reviewMutation.isPending}
-                    className="flex flex-1 items-center justify-center gap-2 rounded-lg border border-red-500/30 bg-red-500/10 py-2.5 text-sm font-medium text-red-400 hover:bg-red-500/20 disabled:opacity-50"
-                  >
-                    <XCircle className="h-4 w-4" />
-                    Reject
-                  </button>
-                </div>
               </div>
             )}
 

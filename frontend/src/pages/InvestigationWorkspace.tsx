@@ -19,6 +19,8 @@ import { useSSE } from '../hooks/useSSE'
 import { StatusBadge } from '../components/StatusBadge'
 import { FindingReport } from '../components/FindingReport'
 import type { SSEEvent } from '../api/types'
+import { DEMO_MODE } from '../demo'
+import { demoStore } from '../demo/demoStore'
 
 const ASSETS = ['PUMP-01', 'MOTOR-01', 'CONVEYOR-01', 'FILL-01']
 
@@ -227,6 +229,7 @@ export function InvestigationWorkspace() {
     disconnect()
     setActiveInvId(null)
     setPhase('idle')
+    if (DEMO_MODE) demoStore.reset()
   }
 
   // Pair up tool_call and tool_result events
@@ -377,9 +380,11 @@ export function InvestigationWorkspace() {
           <div className="sticky top-0 z-10 border-b border-slate-800 bg-slate-950/90 px-4 py-2.5 backdrop-blur-sm">
             <div className="flex items-center justify-between">
               <span className="text-xs font-medium text-slate-500">
-                {toolPairs.length > 0
-                  ? `Agent Activity · ${toolPairs.length} tool calls`
-                  : 'Waiting for agent…'}
+                {DEMO_MODE
+                  ? 'Recorded Scripted Investigation — No live AI inference'
+                  : toolPairs.length > 0
+                    ? `Agent Activity · ${toolPairs.length} tool calls`
+                    : 'Waiting for agent…'}
               </span>
               {invData && (
                 <div className="flex items-center gap-2">

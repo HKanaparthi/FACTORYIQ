@@ -5,6 +5,9 @@ import type {
   EvalScenario,
   FourConditionsResponse,
 } from '../api/types'
+import { DEMO_MODE } from '../demo'
+import { DEMO_EVAL_RUN, getDemoEvalResults, getDemoFourConditions } from '../demo/fixtures/evalRuns'
+import { DEMO_SCENARIOS } from '../demo/fixtures/scenarios'
 
 const API = import.meta.env.VITE_API_URL ?? 'http://localhost:8080'
 
@@ -21,7 +24,7 @@ async function fetchJson<T>(path: string): Promise<T> {
 export function useScenarios() {
   return useQuery<EvalScenario[]>({
     queryKey: ['eval', 'scenarios'],
-    queryFn: () => fetchJson('/api/eval/scenarios'),
+    queryFn: () => DEMO_MODE ? Promise.resolve(DEMO_SCENARIOS) : fetchJson('/api/eval/scenarios'),
     staleTime: 5 * 60 * 1000,
   })
 }
@@ -29,7 +32,14 @@ export function useScenarios() {
 export function useScenario(scenarioId: string) {
   return useQuery<EvalScenario>({
     queryKey: ['eval', 'scenarios', scenarioId],
-    queryFn: () => fetchJson(`/api/eval/scenarios/${scenarioId}`),
+    queryFn: () => {
+      if (DEMO_MODE) {
+        const s = DEMO_SCENARIOS.find(s => s.scenario_id === scenarioId)
+        if (!s) throw new Error(`Scenario not found: ${scenarioId}`)
+        return Promise.resolve(s)
+      }
+      return fetchJson(`/api/eval/scenarios/${scenarioId}`)
+    },
     staleTime: 5 * 60 * 1000,
     enabled: Boolean(scenarioId),
   })
@@ -42,16 +52,19 @@ export function useScenario(scenarioId: string) {
 export function useEvalRuns() {
   return useQuery<EvalRun[]>({
     queryKey: ['eval', 'runs'],
-    queryFn: () => fetchJson('/api/eval/runs'),
-    refetchInterval: 5000,
+    queryFn: () => DEMO_MODE ? Promise.resolve([DEMO_EVAL_RUN]) : fetchJson('/api/eval/runs'),
+    refetchInterval: DEMO_MODE ? false : 5000,
   })
 }
 
 export function useEvalRun(runId: string) {
   return useQuery<EvalRun>({
     queryKey: ['eval', 'runs', runId],
-    queryFn: () => fetchJson(`/api/eval/runs/${runId}`),
-    refetchInterval: (query) => {
+    queryFn: () => {
+      if (DEMO_MODE) return Promise.resolve(DEMO_EVAL_RUN)
+      return fetchJson(`/api/eval/runs/${runId}`)
+    },
+    refetchInterval: DEMO_MODE ? false : (query) => {
       const data = query.state.data
       return data?.status === 'running' ? 2000 : false
     },
@@ -62,9 +75,11 @@ export function useEvalRun(runId: string) {
 export function useEvalResults(runId: string) {
   return useQuery<EvalResult[]>({
     queryKey: ['eval', 'runs', runId, 'results'],
-    queryFn: () => fetchJson(`/api/eval/runs/${runId}/results`),
-    refetchInterval: (query) => {
-      // keep polling while parent run is running
+    queryFn: () => {
+      if (DEMO_MODE) return Promise.resolve(getDemoEvalResults(runId))
+      return fetchJson(`/api/eval/runs/${runId}/results`)
+    },
+    refetchInterval: DEMO_MODE ? false : (query) => {
       return query.state.data?.length === 0 ? 3000 : false
     },
     enabled: Boolean(runId),
@@ -90,6 +105,11 @@ export function useStartRun() {
   const qc = useQueryClient()
   return useMutation<StartRunResponse, Error, StartRunPayload>({
     mutationFn: async (payload) => {
+      if (DEMO_MODE) {
+        // In demo mode, return the pre-recorded run — no network call
+        void payload
+        return { run_id: DEMO_EVAL_RUN.run_id, status: 'completed' }
+      }
       const r = await fetch(`${API}/api/eval/runs`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -118,7 +138,8 @@ export function useStartRun() {
 export function useFourConditions() {
   return useQuery<FourConditionsResponse>({
     queryKey: ['eval', 'four-conditions'],
-    queryFn: () => fetchJson('/api/eval/four-conditions'),
+    queryFn: () =>
+      DEMO_MODE ? Promise.resolve(getDemoFourConditions()) : fetchJson('/api/eval/four-conditions'),
     staleTime: 10 * 1000,
   })
 }
